@@ -1,146 +1,110 @@
 import os
+import time
 import requests
+import pymongo
 from datetime import datetime
-from pymongo import MongoClient
 from dotenv import load_dotenv
-import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
+# Load environment variables
 load_dotenv()
+MONGO_URI = os.getenv("MONGO_URI")
+DB_NAME = os.getenv("DB_NAME")
 
-class ETLExtractor:    
-    def __init__(self, base_url, api_key):
-        self.base_url = base_url
-        self.api_key = api_key
-        self.headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        }
-        
-    def fetch_top_headlines(self, country='us'):
-        url = f"{self.base_url}/top-headlines"
-        params = {
-            'country': country,
-            'apiKey': self.api_key
-        }
+BASE_URL = "https://www.dshield.org/ipsascii.html"
+LOCAL_FALLBACK_FILE = "dshield_fallback.txt"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+}
+
+def extract_data():
+    print("[INFO] Fetching data from DShield with retries...")
+    retries = 3
+    for attempt in range(1, retries + 1):
         try:
-            logger.info(f"Fetching data from: {url} with params {params}")
-            response = requests.get(url, headers=self.headers, params=params)
+            response = requests.get(
+                BASE_URL, 
+                headers=HEADERS,
+                timeout=60,         # longer timeout
+                verify=False        # bypass SSL cert issues
+            )
             response.raise_for_status()
-            data = response.json()
-            if data.get('status') == 'ok':
-                return data.get('articles')
-            else:
-                logger.error(f"API returned error status: {data.get('status')}")
-                return None
+
+            # Save a local copy for future fallback
+            with open(LOCAL_FALLBACK_FILE, "w", encoding="utf-8") as f:
+                f.write(response.text)
+
+            print("[DEBUG] First 5 lines of feed:")
+            for line in response.text.split("\n")[:5]:
+                print(line)
+            return response.text
+
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching data: {e}")
-            return None
-
-class ETLTransformer:    
-    @staticmethod
-    def transform_articles(articles):
-        if not articles:
-            return None
-        
-        transformed = []
-        ingestion_time = datetime.utcnow()
-        
-        for article in articles:
-            transformed.append({
-                'source': article.get('source'),
-                'author': article.get('author'),
-                'title': article.get('title'),
-                'description': article.get('description'),
-                'url': article.get('url'),
-                'publishedAt': article.get('publishedAt'),
-                'content': article.get('content'),
-                'ingestion_timestamp': ingestion_time
-            })
-        return transformed
-
-class ETLLoader:
-    """Handles loading data into MongoDB"""
+            print(f"[WARNING] Attempt {attempt} failed: {e}")
+            if attempt < retries:
+                sleep_time = 5 * attempt
+                print(f"[INFO] Retrying in {sleep_time} seconds...")
+                time.sleep(sleep_time)
+            else:
+                print("[ERROR] All retries failed.")
     
-    def __init__(self, mongo_uri, db_name):
-        self.mongo_uri = mongo_uri
-        self.db_name = db_name
-        self.client = None
-        
-    def __enter__(self):
+    # Fallback to local file if available
+    if os.path.exists(LOCAL_FALLBACK_FILE):
+        print("[INFO] Using local fallback file instead.")
+        with open(LOCAL_FALLBACK_FILE, encoding="utf-8") as f:
+            return f.read()
+    else:
+        raise RuntimeError("Could not fetch DShield data and no fallback file exists.")
+
+def transform_data(raw_text):
+    print("[INFO] Transforming data...")
+    data = []
+    for line in raw_text.strip().split("\n"):
+        if line.startswith("#") or not line.strip():
+            continue
+
+        parts = line.split("\t")
+        if len(parts) == 5:
+            ip, asn, cc, attacks, name = parts
+        elif len(parts) == 6:
+            ip, asn, cc, date_str, attacks, name = parts
+        else:
+            print(f"[WARNING] Unexpected format: {parts}")
+            continue
+
         try:
-            self.client = MongoClient(self.mongo_uri)
-            logger.info("Connected to MongoDB")
-            return self
+            record = {
+                "ip": ip,
+                "asn": int(asn) if asn.isdigit() else None,
+                "country_code": cc,
+                "attacks": int(attacks) if attacks.isdigit() else None,
+                "name": name if name else None,
+                "ingested_at": datetime.utcnow()
+            }
+            data.append(record)
         except Exception as e:
-            logger.error(f"MongoDB connection error: {e}")
-            raise
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.client:
-            self.client.close()
-            logger.info("MongoDB connection closed")
-            
-    def load_data(self, collection_name, data):
-        if not data:
-            logger.warning("No data to load")
-            return False
-        
-        try:
-            db = self.client[self.db_name]
-            collection = db[collection_name]
-            result = collection.insert_many(data)
-            logger.info(f"Inserted {len(result.inserted_ids)} documents into {collection_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Error loading data into MongoDB: {e}")
-            return False
+            print(f"[WARNING] Skipping line due to error: {e}")
+
+    return data
+
+def load_data(records):
+    print("[INFO] Loading data into MongoDB...")
+    client = pymongo.MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    collection = db["dshield_raw"]
+    if records:
+        collection.insert_many(records)
+        print(f"[INFO] Inserted {len(records)} records into MongoDB.")
+    else:
+        print("[WARNING] No data to insert.")
 
 def run_etl():
-    NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
-    MONGO_URI = os.getenv('MONGODB_URI')
-    DB_NAME = 'news_db'
-    COLLECTION_NAME = 'newsapi_raw'
-    BASE_URL = 'https://newsapi.org/v2'
-    
-    if not NEWSAPI_KEY:
-        logger.error("NEWSAPI_KEY is not set in .env")
-        return
-    
-    if not MONGO_URI:
-        logger.error("MONGODB_URI is not set in .env")
-        return
-    
-    extractor = ETLExtractor(BASE_URL, NEWSAPI_KEY)
-    transformer = ETLTransformer()
-    
-    logger.info("Starting ETL pipeline - Extraction")
-    articles = extractor.fetch_top_headlines()
-    
-    if not articles:
-        logger.error("Extraction failed or returned no articles")
-        return
-    
-    logger.info("Transforming data")
-    transformed_data = transformer.transform_articles(articles)
-    
-    if not transformed_data:
-        logger.error("Transformation failed or no data after transformation")
-        return
-    
-    logger.info("Loading data into MongoDB")
-    with ETLLoader(MONGO_URI, DB_NAME) as loader:
-        success = loader.load_data(COLLECTION_NAME, transformed_data)
-    
-    if success:
-        logger.info("ETL pipeline completed successfully")
-    else:
-        logger.error("ETL pipeline failed during loading")
+    try:
+        raw_text = extract_data()
+        records = transform_data(raw_text)
+        load_data(records)
+    except Exception as e:
+        print(f"[ERROR] {e}")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_etl()

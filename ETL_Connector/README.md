@@ -1,29 +1,37 @@
-# NewsAPI ETL Connector
+# DShield Top Attackers ETL Connector
 
-**Name:** Nivetha Dhanakoti
+**Name:** Nivetha Dhanakoti <br>
 **Roll Number:** 3122225001087
 
 ## Overview
-This connector extracts top news headlines from NewsAPI, transforms them, and loads into MongoDB.
+This ETL pipeline fetches the Top Attackers IP Feed from DShield, transforms it into structured data, and loads it into MongoDB for analysis.
+
+### API Details
+- Base URL: https://www.dshield.org
+- Endpoint: `/ipsascii.html`
+- Format: `text/plain`
+- Auth: None required
+
+### Example Data
+| ip              | asn    | country_code | attacks | name  |
+|-----------------|--------|--------------|---------|-------|
+| 45.183.247.179  | 262287 | BR           | 34230   | None  |
 
 ## Setup
-1. Register at https://newsapi.org/ and get your API key.
-2. Create a `.env` file with:
-3. pip install -r requirements.txt
-4. Run ETL: `python etl_connector.py`
+1. Create a `.env` file:
+2. pip install -r requirements.txt
+3. Run ETL: `python etl_connector.py`
 
-## Data Model
-
+## MongoDB DATA
 ```json
 {
-  "author": "Herb Scribner",
-  "title": "COVID-19 cases boom as 'Stratus' variant breaks out - Axios",
-  "description": "The CDC upgraded wastewater activity for COVID-19 from \"low\" to \"moderate\" amid the \"Stratus\" variant surge.",
-  "url": "https://www.axios.com/2025/08/08/covid-19-stratus-variant-symptoms-cases-cdc",
-  "publishedAt": "2025-08-09T08:22:01Z",
-  "content": "<ul><li>The risk of a summertime COVID-19 wave comes after Health Secretary Robert F. Kennedy Jr. unilaterally changed federal COVID vaccine recommendations, causing confusion over who should get the… [+2861 chars]",
-  "ingestion_timestamp": {
-    "$date": "2025-08-10T09:22:24.052Z"
+  "ip": "185.224.128.017",
+  "asn": 475183,
+  "country_code": "9728",
+  "attacks": null,
+  "name": "2025-08-09",
+  "ingested_at": {
+    "$date": "2025-08-11T03:26:22.663Z"
   }
 }
 ```
